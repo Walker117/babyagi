@@ -12,14 +12,22 @@
     "babyagi": "node babyagi.js",
     "start": "npm run chroma-up && node babyagi.js",
     "chroma-up": "docker-compose -f ./chroma/docker-compose.yml up -d --build",
-    "chroma-down": "docker-compose -f ./chroma/docker-compose.yml down"
+    "chroma-down": "docker-compose -f ./chroma/docker-compose.yml down",
+    "build": "tsc",
+    "dev": "node --loader ts-node/esm src/babyagi.ts"
   },
   "keywords": [],
   "license": "ISC",
   "dependencies": {
-    "chromadb": "^1.4.1",
+    "chromadb": "latest",
     "dotenv": "^16.0.3",
-    "openai": "^3.2.1",
-    "prompt-sync": "^4.2.0"
+    "groq-sdk": "^0.3.3",
+    "openai": "latest",
+    "prompt-sync": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.10",
+    "@types/prompt-sync": "^4.2.3",
+    "ts-node": "^10.9.2"
   }
 }
