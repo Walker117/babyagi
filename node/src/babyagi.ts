@@ -4,6 +4,7 @@ import prompt from "prompt-sync"
 import assert from "assert"
 import * as dotenv from "dotenv"
 import Groq from 'groq-sdk';
+import { randomUUID } from "crypto"
 dotenv.config()
 
 export enum AIModel {
@@ -14,41 +15,41 @@ export enum AIModel {
     Llama3Large = 'llama3-70b-8192'
 }
 interface Task {
-    taskId: number
+    taskId: string
     taskName: string
 }
 
-// const client = new ChromaClient("http://localhost:8000")
+export enum LLM_API {
+    OpenAI = "OpenAI",
+    Groq = "Groq"
+}
 
-// API Keys
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ""
-assert(OPENAI_API_KEY, "OPENAI_API_KEY environment variable is missing from .env")
-const GROQ_API_KEY = process.env.GROQ_API_KEY || ""
+const api: LLM_API = LLM_API.OpenAI as LLM_API
+const model: AIModel = ((api: LLM_API): AIModel => {
+    switch (api) {
+        case LLM_API.OpenAI:
+            return AIModel.GPT3T
+        case LLM_API.Groq:
+            return AIModel.Llama3Large
+    }
+})(api)
 
-const OPENAI_API_MODEL = process.env.OPENAI_API_MODEL || "gpt-3.5-turbo"
-const GROQ_API_MODEL = process.env.GROQ_API_MODEL || AIModel.Llama3Small
-
-// Table config
-const TABLE_NAME = process.env.TABLE_NAME || ""
-assert(TABLE_NAME, "TABLE_NAME environment variable is missing from .env")
+const TABLE_NAME = "babyagi_context"
 
 // Run config
-const BABY_NAME = process.env.BABY_NAME || "BabyAGI"
+const BABY_NAME = "BabyAGI"
 
 // Goal config
 const p = prompt()
 const OBJECTIVE = p("What is BabyAGI's objective? ")
-const INITIAL_TASK = p("What is the initial task to complete the objective? ")
+const INITIAL_TASK = "Break down the objective into simple steps that you need to provide the answer" // p("What is the initial task to complete the objective? ") 
 assert(OBJECTIVE, "No objective provided.")
 assert(INITIAL_TASK, "No initial task provided.")
 
 console.log('\x1b[95m\x1b[1m\n*****CONFIGURATION*****\n\x1b[0m\x1b[0m')
 console.log(`Name: ${BABY_NAME}`)
-console.log(`LLM: ${OPENAI_API_MODEL}`)
-
-if (OPENAI_API_MODEL.toLowerCase().includes("gpt-4")) {
-    console.log("\x1b[91m\x1b[1m\n*****USING GPT-4. POTENTIALLY EXPENSIVE. MONITOR YOUR COSTS*****\x1b[0m\x1b[0m")
-}
+console.log(`API: ${api}`)
+console.log(`Model: ${model}`)
 
 console.log("\x1b[94m\x1b[1m" + "\n*****OBJECTIVE*****\n" + "\x1b[0m\x1b[0m")
 console.log(`${OBJECTIVE}`)
@@ -56,64 +57,76 @@ console.log(`${OBJECTIVE}`)
 console.log(`\x1b[93m\x1b[1m \nInitial task: \x1b[0m\x1b[0m ${INITIAL_TASK}`)
 
 // Define OpenAI embedding function using Chroma 
-const embeddingFunction = new OpenAIEmbeddingFunction({ openai_api_key: OPENAI_API_KEY })
+const embeddingFunction = new OpenAIEmbeddingFunction({ openai_api_key: process.env.OPENAI_API_KEY ?? "" })
 
 // Configure OpenAI
-const params = {
-    apiKey: OPENAI_API_KEY,
-    verbose: true
-}
-const openai = new OpenAI(params);
-const groq = new Groq({ apiKey: GROQ_API_KEY });
+const llm = (() => {
+    switch (api) {
+        case LLM_API.OpenAI:
+            return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        case LLM_API.Groq:
+            return new Groq({ apiKey: process.env.GROQ_API_KEY })
+    }
+})()
 
 //Task List
 var taskList: Task[] = []
 
 // Connect to chromadb and create/get collection
-const chromaConnect = async () => {
+const chromaConnect = async (): Promise<Collection> => {
     const chroma = new ChromaClient({ path: "http://localhost:8000" })
     const metric = "cosine"
     const collections = await chroma.listCollections()
     const collectionNames = collections.map((c) => c.name)
+
     if (collectionNames.includes(TABLE_NAME)) {
-        const collection = await chroma.getCollection({ name: TABLE_NAME, embeddingFunction })
-        return collection
+        // reset collection
+        console.log("Erasing vector database...")
+        await chroma.deleteCollection({ name: TABLE_NAME })
     }
-    else {
-        const collection = await chroma.getOrCreateCollection(
-            {
-                name: TABLE_NAME,
-                metadata: {
-                    "hnsw:space": metric
-                },
-                embeddingFunction
-            }
-        )
-        return collection
-    }
+
+    const collection = await chroma.getOrCreateCollection(
+        {
+            name: TABLE_NAME,
+            metadata: {
+                "hnsw:space": metric
+            },
+            embeddingFunction
+        }
+    )
+    return collection
 }
 
 const add_task = (task: Task) => { taskList.push(task) }
 
 const clear_tasks = () => { taskList = [] }
 
-const get_ada_embedding = async (text: string) => {
-    text = text.replace("\n", " ")
-    const embedding = await embeddingFunction.generate([text])
-    return embedding
+const sessionId = randomUUID().toString()
+let currentTaskId = 0
+const generateNewTaskId = (): string => {
+    currentTaskId++
+    return `${sessionId}_${currentTaskId}`
 }
 
 const openai_completion = async (prompt: string, temperature = 0.5, maxTokens = 100): Promise<string> => {
     const messages = [{ role: "system" as "system", content: prompt, name: BABY_NAME }]
-    const response = await groq.chat.completions.create({
-        model: GROQ_API_MODEL,
+    const params = {
+        model: model,
         messages: messages,
         max_tokens: maxTokens,
         temperature: temperature,
         n: 1,
         stop: null
-    })
-    return response.choices[0].message.content ?? ""
+    }
+
+    switch (api) {
+        case LLM_API.OpenAI:
+            const openAI_response = await (llm as OpenAI).chat.completions.create(params)
+            return openAI_response.choices[0].message.content ?? ""
+        case LLM_API.Groq:
+            const response = await (llm as Groq).chat.completions.create(params)
+            return response.choices[0].message.content ?? ""
+    }
 }
 
 const task_creation_agent = async (objective: string, result: string, task_description: string, taskList: Task[]): Promise<{ taskName: string }[]> => {
@@ -129,24 +142,18 @@ const task_creation_agent = async (objective: string, result: string, task_descr
     return newTasks.map(taskName => ({ taskName: taskName }));
 }
 
-
-
-const prioritization_agent = async (taskId: number) => {
+const prioritization_agent = async () => {
     const taskNames = taskList.map((task) => task.taskName)
-    const nextTaskId = taskId + 1
     const prompt = `
     You are an task prioritization AI tasked with cleaning the formatting of and reprioritizing the following tasks: ${taskNames}. 
-    Consider the ultimate objective of your team:${OBJECTIVE}. Do not remove any tasks. Return the result as a numbered list, like:
-    {number}. First task
-    {number = number + 1}. Second task
-    Start the task list with number ${nextTaskId}.`
+    Consider the ultimate objective of your team:${OBJECTIVE}. Do not remove any tasks. Return the result as a numbered list.`
     const response = await openai_completion(prompt)
     const newTasks = response.trim().includes("\n") ? response.trim().split("\n") : [response.trim()];
     clear_tasks()
     newTasks.forEach((newTask) => {
         const newTaskParts = newTask.trim().split(/\.(?=\s)/)
         if (newTaskParts.length == 2) {
-            const newTaskId = Number(newTaskParts[0].trim())
+            const newTaskId = generateNewTaskId()
             const newTaskName = newTaskParts[1].trim()
             add_task({
                 taskId: newTaskId,
@@ -172,12 +179,22 @@ const context_agent = async (query: string, topResultsNum: number, chromaCollect
         return []
     }
 
+    const vector = (await embeddingFunction.generate([query])).shift()
     const data = {
-        queryTexts: query,
+        queryEmbeddings: vector,
         nResults: topResultsNum,
     }
     const results = await chromaCollection.query(data)
-    return results.metadatas[0].map(item => item ? item.task : null)
+    return results.documents.map(document => document ?? "")
+}
+
+const responderAgent = async (query: string, topResultsNum: number, chromaCollection: Collection) => {
+    const context = await context_agent(query, topResultsNum, chromaCollection)
+    const prompt = `
+    You are an AI who responds to a query based on the following context: ${context}.\n
+    Your query: ${query}\nResponse:`
+    const response = await openai_completion(prompt, undefined, 2000)
+    return response
 }
 
 function sleep(ms: number) {
@@ -186,74 +203,55 @@ function sleep(ms: number) {
 
 (async () => {
     const initialTask = {
-        taskId: 1,
+        taskId: generateNewTaskId(),
         taskName: INITIAL_TASK
     }
     add_task(initialTask)
     const chromaCollection = await chromaConnect()
-    var taskIdCounter = 1
+
     while (true) {
-        if (taskList.length > 0) {
-            console.log("\x1b[95m\x1b[1m" + "\n*****TASK LIST*****\n" + "\x1b[0m\x1b[0m")
-            taskList.forEach(t => {
-                console.log(" • " + t.taskName)
-            })
+        console.log("\x1b[95m\x1b[1m" + "\n*****TASK LIST*****\n" + "\x1b[0m\x1b[0m")
+        taskList.forEach(t => {
+            console.log(" • " + t.taskName)
+        })
 
-            // Step 1: Pull the first task
-            const task = taskList.shift()
-            if (!task) {
-                break
-            }
-            console.log("\x1b[92m\x1b[1m" + "\n*****NEXT TASK*****\n" + "\x1b[0m\x1b[0m")
-            console.log(task.taskId + ": " + task.taskName)
-
-            // Send to execution function to complete the task based on the context
-            const result = await execution_agent(OBJECTIVE, task.taskName, chromaCollection)
-            const currTaskId = task.taskId
-            console.log("\x1b[93m\x1b[1m" + "\nTASK RESULT\n" + "\x1b[0m\x1b[0m")
-            console.log(result)
-
-            // Step 2: Enrich result and store in Chroma
-            const enrichedResult = { data: result }  // this is where you should enrich the result if needed
-            const resultId = `result_${task.taskId}`
-            const vector = enrichedResult.data // extract the actual result from the dictionary
-            const collectionLength = (await chromaCollection.get(
-                {
-                    ids: [resultId]
-                })
-            ).ids?.length
-            if (collectionLength > 0) {
-                await chromaCollection.update(
-                    {
-                        ids: [resultId],
-                        metadatas: [{ task: task.taskName, result: result }],
-                        documents: [vector]
-                    }
-                )
-            }
-            else {
-                await chromaCollection.add({
-                    ids: resultId,
-                    embeddings: undefined,
-                    metadatas: { task: task.taskName, result },
-                    documents: vector
-                }
-                )
-            }
-
-            // Step 3: Create new tasks and reprioritize task list
-            const newTasks = await task_creation_agent(OBJECTIVE, enrichedResult.data, task.taskName, taskList)
-            newTasks.forEach((task) => {
-                taskIdCounter += 1
-                const newTask = {
-                    taskId: taskIdCounter,
-                    taskName: task.taskName
-                }
-                add_task(newTask)
-            })
-            await prioritization_agent(currTaskId)
-            await sleep(3000)
+        // Step 1: Pull the first task
+        const task = taskList.shift()
+        if (!task) {
+            break
         }
+        console.log("\x1b[92m\x1b[1m" + "\n*****NEXT TASK*****\n" + "\x1b[0m\x1b[0m")
+        console.log(task.taskId + ": " + task.taskName)
+
+        // Send to execution function to complete the task based on the context
+        const result = await execution_agent(OBJECTIVE, task.taskName, chromaCollection)
+        console.log("\x1b[93m\x1b[1m" + "\nTASK RESULT\n" + "\x1b[0m\x1b[0m")
+        console.log(result)
+
+        // Step 2: Enrich result and store in Chroma
+        const resultId = `result_${task.taskId}`
+        const metadata = { taskId: task.taskId, task: task.taskName }
+        const embedding = (await embeddingFunction.generate([result])).shift()
+
+        await chromaCollection.add({
+            ids: resultId,
+            embeddings: embedding,
+            metadatas: metadata,
+            documents: result
+        })
+
+        // Step 3: Create new tasks and reprioritize task list
+        const newTasks = await task_creation_agent(OBJECTIVE, result, task.taskName, taskList)
+        newTasks.forEach((task) => {
+            const newTask = {
+                taskId: generateNewTaskId(),
+                taskName: task.taskName
+            }
+            add_task(newTask)
+        })
+        await prioritization_agent()
+        await sleep(30)
     }
-})()
+}
+)()
 
