@@ -6,6 +6,13 @@ import * as dotenv from "dotenv"
 import Groq from 'groq-sdk';
 dotenv.config()
 
+export enum AIModel {
+    GPT3T = 'gpt-3.5-turbo',
+    GPT4T = 'gpt-4-turbo',
+    Mixtral = 'mixtral-8x7b-32768',
+    Llama3Small = 'llama3-8b-8192',
+    Llama3Large = 'llama3-70b-8192'
+}
 interface Task {
     taskId: number
     taskName: string
@@ -16,8 +23,10 @@ interface Task {
 // API Keys
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ""
 assert(OPENAI_API_KEY, "OPENAI_API_KEY environment variable is missing from .env")
+const GROQ_API_KEY = process.env.GROQ_API_KEY || ""
 
 const OPENAI_API_MODEL = process.env.OPENAI_API_MODEL || "gpt-3.5-turbo"
+const GROQ_API_MODEL = process.env.GROQ_API_MODEL || AIModel.Llama3Small
 
 // Table config
 const TABLE_NAME = process.env.TABLE_NAME || ""
@@ -55,6 +64,7 @@ const params = {
     verbose: true
 }
 const openai = new OpenAI(params);
+const groq = new Groq({ apiKey: GROQ_API_KEY });
 
 //Task List
 var taskList: Task[] = []
@@ -95,8 +105,8 @@ const get_ada_embedding = async (text: string) => {
 
 const openai_completion = async (prompt: string, temperature = 0.5, maxTokens = 100): Promise<string> => {
     const messages = [{ role: "system" as "system", content: prompt, name: BABY_NAME }]
-    const response = await openai.chat.completions.create({
-        model: OPENAI_API_MODEL,
+    const response = await groq.chat.completions.create({
+        model: GROQ_API_MODEL,
         messages: messages,
         max_tokens: maxTokens,
         temperature: temperature,
@@ -147,7 +157,7 @@ const prioritization_agent = async (taskId: number) => {
 }
 
 const execution_agent = async (objective: string, task: string, chromaCollection: Collection) => {
-    const context = context_agent(objective, 5, chromaCollection)
+    const context = await context_agent(objective, 5, chromaCollection)
     const prompt = `
     You are an AI who performs one task based on the following objective: ${objective}.\n
     Take into account these previously completed tasks: ${context}.\n
