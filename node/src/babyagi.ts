@@ -108,6 +108,8 @@ const generateNewTaskId = (): string => {
     return `${sessionId}_${currentTaskId}`
 }
 
+let inputTokenUsage = 0
+let completionTokenUsage = 0
 const openai_completion = async (prompt: string, temperature = 0.5, maxTokens = 100): Promise<string> => {
     const messages = [{ role: "system" as "system", content: prompt, name: BABY_NAME }]
     const params = {
@@ -122,9 +124,21 @@ const openai_completion = async (prompt: string, temperature = 0.5, maxTokens = 
     switch (api) {
         case LLM_API.OpenAI:
             const openAI_response = await (llm as OpenAI).chat.completions.create(params)
+            if (openAI_response.usage?.total_tokens ?? 0) {
+                inputTokenUsage += openAI_response.usage?.total_tokens ?? 0
+                completionTokenUsage += (openAI_response.usage?.completion_tokens ?? 0)
+            }
+            console.log(`Total input tokens used: ${inputTokenUsage}`)
+            console.log(`Total completion tokens used: ${completionTokenUsage}`)
             return openAI_response.choices[0].message.content ?? ""
         case LLM_API.Groq:
             const response = await (llm as Groq).chat.completions.create(params)
+            if (response.usage?.total_tokens ?? 0) {
+                inputTokenUsage += response.usage?.total_tokens ?? 0
+                completionTokenUsage += (response.usage?.completion_tokens ?? 0)
+            }
+            console.log(`Total input tokens used: ${inputTokenUsage}`)
+            console.log(`Total completion tokens used: ${completionTokenUsage}`)
             return response.choices[0].message.content ?? ""
     }
 }
